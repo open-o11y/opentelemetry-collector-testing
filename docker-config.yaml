@@ -1,0 +1,275 @@
+---
+# create rpc-app namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otelcol
+  labels:
+    name: otelcol
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prom-admin
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes", "services", "endpoints", "ingress"]
+  verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prom-rbac
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: otelcol
+roleRef:
+  kind: ClusterRole
+  name: prom-admin
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-conf
+  labels:
+    app: opentelemetry
+    component: otel-collector-conf
+data:
+  otel-collector-config: |
+    receivers:
+      prometheus:
+        config:
+          global:
+            scrape_interval: 1m
+            scrape_timeout: 10s
+          scrape_configs:
+          - job_name: 'kubernetes-pods'
+            kubernetes_sd_configs:
+            - role: pod
+            tls_config:
+              ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+              insecure_skip_verify: true
+            bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+            relabel_configs:
+            # Example relabel to scrape only pods that have
+            # "prometheus.io/scrape = true" annotation.
+            #  - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+            #    action: keep
+            #    regex: true
+            #
+            # Example relabel to customize metric path based on pod
+            # "prometheus.io/metric_path = <metric path>" annotation.
+            #  - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_metric_path]
+            #    action: replace
+            #    target_label: __metrics_path__
+            #    regex: (.+)
+            #
+            # Example relabel to scrape only single, desired port for the pod
+            # based on pod "prometheus.io/scrape_port = <port>" annotation.
+            #  - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_scrape_port]
+            #    action: replace
+            #    regex: ([^:]+)(?::\d+)?;(\d+)
+            #    replacement: $1:$2
+            #    target_label: __address__
+            #
+            - action: labelmap
+              regex: __meta_kubernetes_pod_label_(.+)
+            - action: replace
+              source_labels: [__meta_kubernetes_namespace]
+              target_label: Namespace
+            - action: replace
+              source_labels: [__meta_kubernetes_pod_name]
+              target_label: pod_name
+            - action: replace
+              source_labels: [__meta_kubernetes_pod_container_name]
+              target_label: container_name
+            - action: replace
+              source_labels: [__meta_kubernetes_pod_controller_name]
+              target_label: pod_controller_name
+            - action: replace
+              source_labels: [__meta_kubernetes_pod_controller_kind]
+              target_label: pod_controller_kind
+            - action: replace
+              source_labels: [__meta_kubernetes_pod_phase]
+              target_label: pod_phase
+              
+            metric_relabel_configs:
+            - action: drop
+              source_labels: [__name__]
+              regex: 'go_gc_duration_seconds.*'
+          - job_name: 'kubernetes-service-endpoints'
+            kubernetes_sd_configs:
+            - role: endpoints
+            tls_config:
+              ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+              insecure_skip_verify: true
+            bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+            relabel_configs:
+            # Example relabel to scrape only endpoints that have
+            # "prometheus.io/scrape = true" annotation.
+            #  - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+            #    action: keep
+            #    regex: true
+            #
+            # Example relabel to customize metric path based on endpoints
+            # "prometheus.io/metric_path = <metric path>" annotation.
+            #  - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_metric_path]
+            #    action: replace
+            #    target_label: __metrics_path__
+            #    regex: (.+)
+            #
+            # Example relabel to scrape only single, desired port for the service based
+            # on endpoints "prometheus.io/scrape_port = <port>" annotation.
+            #  - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_scrape_port]
+            #    action: replace
+            #    regex: ([^:]+)(?::\d+)?;(\d+)
+            #    replacement: $1:$2
+            #    target_label: __address__
+            #
+            # Example relabel to configure scrape scheme for all service scrape targets
+            # based on endpoints "prometheus.io/scrape_scheme = <scheme>" annotation.
+            #  - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape_scheme]
+            #    action: replace
+            #    target_label: __scheme__
+            #    regex: (https?)
+            #
+            - action: labelmap
+              regex: __meta_kubernetes_pod_label_(.+)      
+            - action: replace
+              source_labels: [__meta_kubernetes_namespace]
+              target_label: Namespace
+            - action: replace
+              source_labels: [__meta_kubernetes_service_name]
+              target_label: Service
+            - action: replace
+              source_labels: [__meta_kubernetes_pod_node_name]
+              target_label: kubernetes_node
+            - action: replace
+              source_labels: [__meta_kubernetes_pod_name]
+              target_label: pod_name
+            - action: replace
+              source_labels: [__meta_kubernetes_pod_container_name]
+              target_label: container_name
+
+    exporters:
+      logging:
+        loglevel: debug
+      cortex:
+        endpoint: "" # UPDATE CORTEX ENDPOINT HERE
+        namespace: "namespace of choice" #UPDATE NAMESPACE HERE
+        aws_auth:
+          enabled: true
+          region: "us-west-2" #UPDATE ACCORDING TO YOUR CLOUD SETUP
+          service: "aps"
+          debug: true
+        timeout: 10s
+
+    extensions:
+      health_check: {}
+      zpages: {}
+
+
+    service:
+      extensions: [health_check, zpages]
+      pipelines:
+        metrics:
+          receivers: [prometheus]
+          processors: []
+          exporters: [logging, cortex]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: otelcol
+  labels:
+    app: opentelemetry
+    component: otel-collector
+spec:
+  ports:
+  - name: otlp # Default endpoint for OpenTelemetry receiver.
+    port: 55680
+    protocol: TCP
+    targetPort: 55680
+  - name: metrics # Default endpoint for querying metrics.
+    port: 8888
+  selector:
+    component: otel-collector
+  type: NodePort
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: otelcol
+  labels:
+    app: opentelemetry
+    component: otel-collector
+spec:
+  selector:
+    matchLabels:
+      app: opentelemetry
+      component: otel-collector
+  minReadySeconds: 5
+  progressDeadlineSeconds: 120
+  replicas: 1 #TODO - adjust this to your own requirements
+  template:
+    metadata:
+      labels:
+        app: opentelemetry
+        component: otel-collector
+    spec:
+      containers:
+      - command:
+          - "/otelcol"
+          - "--config=/conf/otel-collector-config.yaml"
+#           Memory Ballast size should be max 1/3 to 1/2 of memory.
+          - "--mem-ballast-size-mib=683"
+        image: # PUT YOUR IMAGE LOCATION HERE
+        name: otel-collector
+        resources:
+          limits:
+            cpu: 1
+            memory: 2Gi
+          requests:
+            cpu: 200m
+            memory: 400Mi
+        ports:
+        - containerPort: 55679 # Default endpoint for ZPages.
+        - containerPort: 55680 # Default endpoint for OpenTelemetry receiver.
+        - containerPort: 8888  # Default endpoint for querying metrics.
+        volumeMounts:
+        - name: otel-collector-config-vol
+          mountPath: /conf
+        - name: otel-collector-output
+          mountPath: /output
+#        - name: otel-collector-secrets
+#          mountPath: /secrets
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 13133 # Health Check extension default port.
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 13133 # Health Check extension default port.
+      volumes:
+        - configMap:
+            name: otel-collector-conf
+            items:
+              - key: otel-collector-config
+                path: otel-collector-config.yaml
+          name: otel-collector-config-vol
+        - name: otel-collector-output
+          emptyDir: {}
+#        - secret:
+#            name: otel-collector-secrets
+#            items:
+#              - key: cert.pem
+#                path: cert.pem
+#              - key: key.pem
+#                path: key.pem
+---

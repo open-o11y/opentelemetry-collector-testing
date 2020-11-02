@@ -1,0 +1,38 @@
+receivers:
+    examplereceiver:
+  
+processors:
+    exampleprocessor:
+ 
+exporters:
+    cortex:
+    cortex/2:
+        namespace: "test-space"
+        sending_queue:
+            enabled: true
+            num_consumers: 2
+            queue_size: 10
+        retry_on_failure:
+            enabled: true
+            initial_interval: 10s
+            max_interval: 60s
+            max_elapsed_time: 10m
+        endpoint: "http://localhost:9009"
+        ca_file: "/var/lib/mycert.pem"
+        write_buffer_size: 524288
+        headers:
+            Prometheus-Remote-Write-Version: "0.1.0"
+            X-Scope-OrgID: 234
+        aws_auth:
+            enabled: true
+            region: "us-west-2"
+            service: "aps"
+            debug: true
+service:
+    pipelines:
+        metrics:
+            receivers: [examplereceiver]
+            processors: [exampleprocessor]
+            exporters: [cortex]
+    
+    
